@@ -1,0 +1,7 @@
+# fluxget-ui2 — local-only and generated paths.
+# The aria2 binary is GPL and never committed (same rule as fluxget).
+runtime/
+downloads/
+*.exe
+.v/
+build/
