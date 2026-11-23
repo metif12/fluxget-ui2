@@ -1,16 +1,9 @@
-// app.v — Fluxget-ui2 application object (custom-renderer build).
+// app.v — Fluxget-ui2 application object (FDM-style, custom renderer).
 //
-// This is the ui2 counterpart of fluxget/platform/{app,control,settings_cmd,
-// details}.v, without any vails or webview knowledge. It owns:
-//   * core.State (shared engine state, with its own lock)
-//   * store.Settings (user preferences, persisted like the original)
-//   * a UI cache guarded by mu, so the background ticker and the ui2 UI
-//     thread never race.
-//
-// Threading mirrors the original design: the ticker polls the engine about
-// once per second (core.State.poll does the restart policy, the diff and the
-// notice queue), copies the result into the UI cache, and calls
-// ui2.request_refresh. No handler sleeps, no background thread touches ui2.
+// The ui2 counterpart of fluxget/platform/{app,control,settings_cmd,details}.v,
+// without any vails or webview knowledge. Owns core.State, store.Settings and
+// a UI cache guarded by mu; the ticker polls ~1/s and the view builds from a
+// Snapshot copy. No handler sleeps, no background thread touches ui2.
 module app
 
 import aria2ctl
@@ -28,20 +21,30 @@ import ui2
 // disagree about what "1.4 MiB/s" means.
 pub struct UiDownload {
 pub:
-	gid     string
-	name    string
-	status  string
-	percent f64
-	speed   string
-	total   string
+	gid        string
+	name       string
+	status     string
+	percent    f64
+	speed      string
+	total      string
+	done       string
+	eta        string
+	dir        string
+	err        string
+	kind       string
+	is_torrent bool
+}
+
+// FileProg is one file inside a torrent, with its own progress.
+pub struct FileProg {
+pub:
+	path    string
 	done    string
-	eta     string
-	dir     string
-	err     string
+	total   string
+	percent f64
 }
 
 // Detail is everything a row is not: the on-demand record for one download.
-// Same shape as platform.Detail in the web UI, minus the JSON wire.
 pub struct Detail {
 pub mut:
 	gid          string
@@ -65,6 +68,7 @@ pub mut:
 	leechers     int
 	trackers     []string
 	files        []string
+	files_prog   []FileProg
 	uris         []string
 	live         []string
 	idle         []string
@@ -89,10 +93,11 @@ pub:
 	fa                 bool
 	search             string
 	filter             string
+	bottom_tab         string
 	show_settings      bool
-	show_detail        bool
 	show_log           bool
 	info               Detail
+	info_fresh         bool
 	set_max_concurrent string
 	set_max_per_server string
 	set_split          string
@@ -137,8 +142,8 @@ pub mut:
 	fa             bool = true
 	search         string
 	filter         string = 'all'
+	bottom_tab     string = 'progress'
 	show_settings  bool
-	show_detail    bool
 	show_log       bool
 	info           Detail
 	info_gid       string
@@ -192,6 +197,55 @@ pub fn new_app(root string) &App {
 		a.message = notes.join('; ')
 	}
 	return a
+}
+
+// ---- file kinds (FDM-style sidebar, pure) ----
+
+// file_kinds is the fixed sidebar order.
+pub const file_kinds = ['video', 'audio', 'documents', 'programs', 'archives', 'torrents', 'other']
+
+// file_kind maps a file name to its FDM-style type by extension. A magnet or a
+// bare gid has no extension and falls through to other unless the caller
+// already knows it is a torrent (see tick_once).
+pub fn file_kind(name string) string {
+	lower := name.to_lower()
+	if lower.ends_with('.torrent') {
+		return 'torrents'
+	}
+	ext := lower.all_after_last('.')
+	if ext == lower {
+		return 'other'
+	}
+	if ext in ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg', '3gp', 'ts',
+		'vob', 'ogv'] {
+		return 'video'
+	}
+	if ext in ['mp3', 'flac', 'wav', 'ogg', 'm4a', 'aac', 'opus', 'wma', 'mid', 'aiff'] {
+		return 'audio'
+	}
+	if ext in ['pdf', 'epub', 'djvu', 'txt', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt',
+		'rtf', 'md', 'csv'] {
+		return 'documents'
+	}
+	if ext in ['exe', 'msi', 'dmg', 'pkg', 'deb', 'rpm', 'apk', 'appimage', 'run'] {
+		return 'programs'
+	}
+	if ext in ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso'] {
+		return 'archives'
+	}
+	return 'other'
+}
+
+// count_kind counts rows of one kind. A separate loop per kind keeps the
+// sidebar order fixed (map iteration order is random).
+pub fn count_kind(rows []UiDownload, kind string) int {
+	mut n := 0
+	for r in rows {
+		if r.kind == kind {
+			n++
+		}
+	}
+	return n
 }
 
 // ---- engine lifecycle ----
@@ -283,17 +337,20 @@ pub fn (mut a App) tick_once() {
 	mut rows := []UiDownload{cap: all.len}
 	for s in all {
 		eta := if s.is_finished() { '' } else { engine.eta_text(s.eta_seconds()) }
+		torrent := s.is_torrent()
 		rows << UiDownload{
-			gid:     s.gid
-			name:    s.display_name('')
-			status:  s.status
-			percent: s.percent()
-			speed:   engine.rate_text(s.download_speed)
-			total:   engine.size_text(s.total_length)
-			done:    engine.size_text(s.completed_length)
-			eta:     eta
-			dir:     s.dir
-			err:     s.error
+			gid:        s.gid
+			name:       s.display_name('')
+			status:     s.status
+			percent:    s.percent()
+			speed:      engine.rate_text(s.download_speed)
+			total:      engine.size_text(s.total_length)
+			done:       engine.size_text(s.completed_length)
+			eta:        eta
+			dir:        s.dir
+			err:        s.error
+			kind:       if torrent { 'torrents' } else { file_kind(s.display_name('')) }
+			is_torrent: torrent
 		}
 	}
 	detail := res.detail
@@ -320,15 +377,8 @@ pub fn (mut a App) tick_once() {
 		}
 		if !found {
 			a.selected = ''
-			a.show_detail = false
+			a.info_gid = ''
 		}
-	}
-	// Refresh the open detail record live while it is visible.
-	if a.show_detail && a.info_gid != '' {
-		a.mu.unlock()
-		d := a.fetch_detail(a.info_gid)
-		a.mu.lock()
-		a.info = d
 	}
 	a.mu.unlock()
 	if a.version == '' {
@@ -338,6 +388,32 @@ pub fn (mut a App) tick_once() {
 			a.mu.unlock()
 		}
 	}
+}
+
+// refresh_detail_if_needed keeps the bottom panel live: when the selection
+// has no fresh record, fetch one. Called from the ticker AFTER tick_once
+// returns (never nested inside the state lock).
+pub fn (mut a App) refresh_detail_if_needed() bool {
+	mut gid := ''
+	a.mu.lock()
+	if a.selected != '' && a.info_gid != a.selected {
+		gid = a.selected
+	}
+	a.mu.unlock()
+	if gid == '' {
+		return false
+	}
+	d := a.fetch_detail(gid)
+	a.mu.lock()
+	// The selection may have moved while the RPCs were in flight.
+	if a.selected == gid {
+		a.info = d
+		a.info_gid = gid
+		a.mu.unlock()
+		return true
+	}
+	a.mu.unlock()
+	return false
 }
 
 // snapshot copies the UI cache for the view thread.
@@ -366,10 +442,11 @@ pub fn (a &App) snapshot() Snapshot {
 		fa:                 a.fa
 		search:             a.search
 		filter:             a.filter
+		bottom_tab:         a.bottom_tab
 		show_settings:      a.show_settings
-		show_detail:        a.show_detail
 		show_log:           a.show_log
 		info:               a.info
+		info_fresh:         a.info_gid != '' && a.info_gid == a.selected
 		set_max_concurrent: a.settings.max_concurrent.str()
 		set_max_per_server: a.settings.max_per_server.str()
 		set_split:          a.settings.split.str()
@@ -393,10 +470,14 @@ pub fn (a &App) snapshot() Snapshot {
 
 // ---- filtering (pure, tested) ----
 
-// matches_filter reports whether a row belongs to a status view and a query.
-// The query matches name, gid, dir and aria2's error text, like the web UI.
+// matches_filter reports whether a row belongs to a status/kind view and a
+// query. The query matches name, gid, dir and aria2's error text, like the
+// web UI.
 pub fn matches_filter(d UiDownload, filter string, query string) bool {
 	if filter == 'active' && d.status != 'active' {
+		return false
+	}
+	if filter == 'downloading' && d.status != 'active' && d.status != 'waiting' {
 		return false
 	}
 	if filter == 'waiting' && d.status != 'waiting' {
@@ -405,7 +486,11 @@ pub fn matches_filter(d UiDownload, filter string, query string) bool {
 	if filter == 'paused' && d.status != 'paused' {
 		return false
 	}
-	if filter == 'done' && !(d.status == 'complete' || d.status == 'error' || d.status == 'removed') {
+	if filter == 'done'
+		&& !(d.status == 'complete' || d.status == 'error' || d.status == 'removed') {
+		return false
+	}
+	if filter.starts_with('kind:') && d.kind != filter[5..] {
 		return false
 	}
 	q := query.trim_space().to_lower()
@@ -465,6 +550,14 @@ pub fn (mut a App) set_filter(f string) {
 		a.mu.unlock()
 	}
 	a.filter = f
+}
+
+pub fn (mut a App) set_bottom_tab(t string) {
+	a.mu.lock()
+	defer {
+		a.mu.unlock()
+	}
+	a.bottom_tab = t
 }
 
 fn (mut a App) selected_gid() string {
@@ -578,7 +671,7 @@ pub fn (mut a App) remove_selected() {
 	a.mu.lock()
 	a.message = if a.fa { 'حذف شد' } else { 'removed' }
 	a.selected = ''
-	a.show_detail = false
+	a.info_gid = ''
 	a.mu.unlock()
 }
 
@@ -711,6 +804,8 @@ pub fn (mut a App) forget_all() {
 
 // ---- detail (on demand, like fluxget.details) ----
 
+// open_detail fetches the record now so the bottom panel has it immediately;
+// the ticker keeps it live afterwards via refresh_detail_if_needed.
 pub fn (mut a App) open_detail() {
 	gid := a.selected_gid()
 	if gid == '' {
@@ -723,23 +818,16 @@ pub fn (mut a App) open_detail() {
 	}
 	d := a.fetch_detail(gid)
 	a.mu.lock()
-	a.info = d
-	a.info_gid = gid
-	a.show_detail = true
-	a.mu.unlock()
-}
-
-pub fn (mut a App) close_detail() {
-	a.mu.lock()
-	defer {
-		a.mu.unlock()
+	if a.selected == gid {
+		a.info = d
+		a.info_gid = gid
 	}
-	a.show_detail = false
+	a.mu.unlock()
 }
 
 // fetch_detail reads tellStatus + files + trackers + mirror state. Each extra
 // call may fail independently (HTTP rows have no trackers, magnets may have no
-// files yet) and yields emptiness, never a blank dialog.
+// files yet) and yields emptiness, never a blank panel.
 fn (mut a App) fetch_detail(gid string) Detail {
 	a.state.lock()
 	defer {
@@ -785,8 +873,19 @@ fn (mut a App) fetch_detail(gid string) Detail {
 		}
 	}
 	for f in a.state.eng.client.get_files(gid) or { []rpc.FileEntry{} } {
-		if f.path != '' {
-			d.files << f.path
+		if f.path == '' {
+			continue
+		}
+		mut p := 0.0
+		if f.length > 0 {
+			p = f64(f.completed_length) / f64(f.length) * 100.0
+		}
+		d.files << f.path
+		d.files_prog << FileProg{
+			path:    f.path
+			done:    engine.size_text(f.completed_length)
+			total:   engine.size_text(f.length)
+			percent: p
 		}
 	}
 	set := engine.mirror_set_from(a.state.remembered(gid)) or { engine.MirrorSet{} }
@@ -996,8 +1095,6 @@ pub fn tr(fa bool, key string) string {
 			'retry' { 'تلاش دوباره' }
 			'details' { 'جزئیات' }
 			'copy' { 'کپی GID' }
-			'up' { '↑' }
-			'down' { '↓' }
 			'pause_all' { 'توقف همه' }
 			'resume_all' { 'ادامه همه' }
 			'forget_all' { 'پاک‌سازی تاریخچه' }
@@ -1007,14 +1104,30 @@ pub fn tr(fa bool, key string) string {
 			'empty' { 'صفی خالی است — یک نشانی بالا اضافه کن' }
 			'needs_engine' { 'موتور آماده نیست' }
 			'all' { 'همه' }
-			'active' { 'در حال دانلود' }
-			'waiting' { 'در صف' }
-			'paused' { 'متوقف' }
-			'done' { 'تمام‌شده' }
+			'downloading' { 'در حال دانلود' }
+			'paused' { 'متوقف‌شده' }
+			'finished' { 'تمام‌شده' }
+			'file_types' { 'نوع فایل' }
+			'video' { 'ویدیو' }
+			'audio' { 'صوتی' }
+			'documents' { 'اسناد' }
+			'programs' { 'برنامه‌ها' }
+			'archives' { 'آرشیو' }
+			'torrents' { 'تورنت' }
+			'other' { 'سایر' }
+			'progress' { 'پیشرفت' }
+			'files' { 'فایل‌ها' }
+			'details_tab' { 'جزئیات' }
 			'speed' { 'سرعت (KiB/s)' }
+			'segments' { 'قطعات' }
+			'loading' { 'در حال بارگذاری…' }
+			'select_hint' {
+				'یک دانلود را انتخاب کن تا جزئیاتش اینجاست'
+			}
 			'close' { 'بستن' }
 			'save' { 'ذخیره' }
 			'pick' { 'انتخاب…' }
+			'events' { 'رویدادها' }
 			else { key }
 		}
 	}
@@ -1030,8 +1143,6 @@ pub fn tr(fa bool, key string) string {
 		'retry' { 'Retry' }
 		'details' { 'Details' }
 		'copy' { 'Copy GID' }
-		'up' { 'Up' }
-		'down' { 'Down' }
 		'pause_all' { 'Pause all' }
 		'resume_all' { 'Resume all' }
 		'forget_all' { 'Clear history' }
@@ -1040,15 +1151,29 @@ pub fn tr(fa bool, key string) string {
 		'lang' { 'فارسی' }
 		'empty' { 'Queue is empty — add a URL above' }
 		'needs_engine' { 'engine not ready' }
-		'all' { 'All' }
-		'active' { 'Active' }
-		'waiting' { 'Waiting' }
+		'all' { 'All downloads' }
+		'downloading' { 'Downloading' }
 		'paused' { 'Paused' }
-		'done' { 'Done' }
+		'finished' { 'Finished' }
+		'file_types' { 'FILE TYPES' }
+		'video' { 'Video' }
+		'audio' { 'Audio' }
+		'documents' { 'Documents' }
+		'programs' { 'Programs' }
+		'archives' { 'Archives' }
+		'torrents' { 'Torrents' }
+		'other' { 'Other' }
+		'progress' { 'Progress' }
+		'files' { 'Files' }
+		'details_tab' { 'Details' }
 		'speed' { 'Speed (KiB/s)' }
+		'segments' { 'Pieces' }
+		'loading' { 'Loading…' }
+		'select_hint' { 'Select a download to inspect it here' }
 		'close' { 'Close' }
 		'save' { 'Save' }
 		'pick' { 'Pick…' }
+		'events' { 'Events' }
 		else { key }
 	}
 }

@@ -46,6 +46,9 @@ fn ticker() {
 			continue
 		}
 		g.tick_once()
+		// Detail for the bottom panel refreshes outside the state lock.
+		changed := g.refresh_detail_if_needed()
+		_ = changed
 		ui2.request_refresh()
 	}
 }
@@ -92,8 +95,8 @@ fn main() {
 	spawn ticker()
 	ui2.run_window_with_options(ui2.WindowOptions{
 		title:   'Fluxget (ui2)'
-		width:   1100
-		height:  760
+		width:   1240
+		height:  820
 		refresh: .on_demand
 	}, build_ui, handle_ui)
 	g.stop_engine()
