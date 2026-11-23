@@ -6,6 +6,7 @@
 // event handler parses the gid out of it.
 module app
 
+import fashape
 import ui2
 
 // max_rows_shown caps one frame: the tick already windows the queue
@@ -31,6 +32,11 @@ pub const c_amber = u32(0xD29922)
 // Roboto has no Arabic coverage, so fa labels resolve against the system
 // Segoe UI instead; Latin keeps the default face.
 pub const fa_font = 'Segoe UI'
+
+// t is tr shaped for the custom renderer (no complex text layout there).
+fn t(fa bool, key string) string {
+	return fashape.sh_auto(tr(fa, key))
+}
 
 fn tfont(fa bool, size f64) ui2.TextStyle {
 	return ui2.TextStyle{
@@ -84,8 +90,16 @@ fn nav_item(id string, title string, count int, y f64, w f64, on bool, fa bool) 
 // is no data yet or the frame is too small for a chart.
 fn speed_chart(s Snapshot, x f64, y f64, w f64, h f64) ui2.Element {
 	if w < 130 || h < 110 || s.hist_down.len == 0 {
-		return ui2.label('', if s.fa { 'هنوز داده‌ای نیست' } else { 'no data yet' },
-			ui2.rect(x, y, w, 24), tmuted(12))
+		return ui2.label('', if s.fa {
+			fashape.sh_auto('هنوز داده‌ای نیست')
+		} else {
+			'no data yet'
+		},
+			ui2.rect(x, y, w, 24), ui2.TextStyle{
+				color:       c_muted
+				size:        12
+				font_family: if s.fa { fa_font } else { '' }
+			})
 	}
 	return ui2.chart(ui2.ChartConfig{
 		id:      'speed'
@@ -95,19 +109,19 @@ fn speed_chart(s Snapshot, x f64, y f64, w f64, h f64) ui2.Element {
 			labels:   s.hist_labels
 			datasets: [
 				ui2.ChartDataset{
-					label: 'down'
+					label: 'D'
 					data:  s.hist_down
 					color: c_accent
 				},
 				ui2.ChartDataset{
-					label: 'up'
+					label: 'U'
 					data:  s.hist_up
 					color: c_green
 				},
 			]
 		}
 		options: ui2.ChartOptions{
-			title:      tr(s.fa, 'speed')
+			title:      'Speed (KiB/s)'
 			legend:     true
 			grid:       true
 			text_color: c_text
@@ -161,7 +175,7 @@ pub fn build_screen(s Snapshot) ui2.Element {
 		size:  19
 		bold:  true
 	})
-	side << ui2.text_field_with_submit('search_field', 'search_go', tr(s.fa, 'search_hint'),
+	side << ui2.text_field_with_submit('search_field', 'search_go', t(s.fa, 'search_hint'),
 		s.search, ui2.rect(12, 48, side_w - 24, 34), ui2.BoxStyle{
 			bg:            u32(0x232830)
 			radius:        7
@@ -185,35 +199,48 @@ pub fn build_screen(s Snapshot) ui2.Element {
 	nav_counts := [s.count_total, s.num_active + s.num_waiting, paused_n, s.num_stopped]
 	nav_ids := ['nav_all', 'nav_downloading', 'nav_paused', 'nav_finished']
 	nav_filters := ['all', 'downloading', 'paused', 'done']
-	nav_titles := [tr(s.fa, 'all'), tr(s.fa, 'downloading'), tr(s.fa, 'paused'), tr(s.fa,
+	nav_titles := [t(s.fa, 'all'), t(s.fa, 'downloading'), t(s.fa, 'paused'), t(s.fa,
 		'finished')]
 	for i in 0 .. 4 {
 		side << nav_item(nav_ids[i], nav_titles[i], nav_counts[i], ny, side_w, s.filter == nav_filters[i],
 			s.fa)
 		ny += 36.0
 	}
-	side << ui2.label('', tr(s.fa, 'file_types'), ui2.rect(16, ny + 6, side_w - 32, 20),
-		tmuted(11))
+	side << ui2.label('', t(s.fa, 'file_types'), ui2.rect(16, ny + 6, side_w - 32, 20),
+		ui2.TextStyle{
+			color:       c_muted
+			size:        11
+			font_family: if s.fa { fa_font } else { '' }
+		})
 	ny += 30.0
 	for k in file_kinds {
-		side << nav_item('kind_' + k, tr(s.fa, k), count_kind(s.downloads, k), ny, side_w,
+		side << nav_item('kind_' + k, t(s.fa, k), count_kind(s.downloads, k), ny, side_w,
 			s.filter == 'kind:' + k, s.fa)
 		ny += 36.0
 	}
 	side << ui2.label('', if s.version != '' { 'aria2 ' + s.version } else { '' }, ui2.rect(16,
-		h - 30, side_w - 32, 20), tmuted(11))
+		h - 62, side_w - 32, 20), tmuted(11))
+	side << ui2.button('lang', t(s.fa, 'lang'), ui2.rect(12, h - 38, side_w - 24, 30),
+		ui2.BoxStyle{
+			bg:     c_bar
+			radius: 7
+		}, ui2.TextStyle{
+			color:       c_text
+			size:        12
+			font_family: if s.fa { fa_font } else { '' }
+		})
 	children << ui2.view('sidebar', ui2.rect(0, 0, side_w, h), ui2.BoxStyle{ bg: c_side },
 		side)
 
 	// ---- toolbar ----
 	mut bar := []ui2.Element{}
-	bar << tool_btn('add', '+', 12, 56, c_accent)
+	bar << tool_btn('add_top', '+', 12, 56, c_accent)
 	bar << tool_btn('resume_sel', '▶', 74, 48, c_bar)
 	bar << tool_btn('pause_sel', '❚❚', 128, 48, c_bar)
 	bar << tool_btn('remove_sel', '×', 182, 48, c_bar)
 	bar << tool_btn('up_sel', '▲', 244, 44, c_bar)
 	bar << tool_btn('down_sel', '▼', 294, 44, c_bar)
-	bar << ui2.button('details_sel', tr(s.fa, 'details'), ui2.rect(352, 10, 96, 40),
+	bar << ui2.button('details_sel', t(s.fa, 'details'), ui2.rect(352, 10, 96, 40),
 		ui2.BoxStyle{
 			bg:     c_bar
 			radius: 8
@@ -222,8 +249,7 @@ pub fn build_screen(s Snapshot) ui2.Element {
 			size:        12
 			font_family: if s.fa { fa_font } else { '' }
 		})
-	right_btns := [['open_settings', tr(s.fa, 'settings')], ['open_log', tr(s.fa, 'log')],
-		['lang', tr(s.fa, 'lang')]]
+	right_btns := [['open_settings', t(s.fa, 'settings')], ['open_log', t(s.fa, 'log')]]
 	mut rx := main_x + main_w - 12.0
 	for i := right_btns.len - 1; i >= 0; i-- {
 		rx -= 100.0
@@ -242,7 +268,7 @@ pub fn build_screen(s Snapshot) ui2.Element {
 		bar)
 
 	// ---- add bar ----
-	children << ui2.text_field_with_submit('add_field', 'add', tr(s.fa, 'url_hint'), '',
+	children << ui2.text_field_with_submit('add_field', 'add', t(s.fa, 'url_hint'), '',
 		ui2.rect(main_x + 12, 68, main_w - 130, 36), ui2.BoxStyle{
 			bg:            u32(0x232830)
 			radius:        7
@@ -252,10 +278,11 @@ pub fn build_screen(s Snapshot) ui2.Element {
 			border_right:  1
 			border_bottom: 1
 		}, ui2.TextStyle{
-			color: c_text
-			size:  13
+			color:       c_text
+			size:        13
+			font_family: if s.fa { fa_font } else { '' }
 		}, 0)
-	children << ui2.button('add', tr(s.fa, 'add'), ui2.rect(main_x + main_w - 106, 68, 94,
+	children << ui2.button('add', t(s.fa, 'add'), ui2.rect(main_x + main_w - 106, 68, 94,
 		36), ui2.BoxStyle{
 		bg:     c_accent
 		radius: 7
@@ -288,7 +315,7 @@ pub fn build_screen(s Snapshot) ui2.Element {
 		list_h = 140
 	}
 	if s.phase != 'ready' {
-		detail := if s.detail != '' { s.detail } else { tr(s.fa, 'needs_engine') }
+		detail := if s.detail != '' { s.detail } else { t(s.fa, 'needs_engine') }
 		children << ui2.label('', detail, ui2.rect(col_name, list_y + 10, main_w - 32, 30),
 			ui2.TextStyle{
 				color:       c_red
@@ -296,7 +323,7 @@ pub fn build_screen(s Snapshot) ui2.Element {
 				font_family: if s.fa { fa_font } else { '' }
 			})
 	} else if rows.len == 0 {
-		children << ui2.label('', tr(s.fa, 'empty'), ui2.rect(col_name, list_y + 10, main_w - 32,
+		children << ui2.label('', t(s.fa, 'empty'), ui2.rect(col_name, list_y + 10, main_w - 32,
 			24), ui2.TextStyle{
 			color:       c_muted
 			size:        13
@@ -315,7 +342,7 @@ pub fn build_screen(s Snapshot) ui2.Element {
 				bg:     if sel { c_row_sel } else { c_row }
 				radius: 8
 			}, [
-				ui2.button('sel_' + d.gid, d.name, ui2.rect(8, 4, name_w, 22), ui2.BoxStyle{
+				ui2.button('sel_' + d.gid, fashape.sh_auto(d.name), ui2.rect(8, 4, name_w, 22), ui2.BoxStyle{
 					transparent: true
 				}, ui2.TextStyle{
 					color: c_text
@@ -342,7 +369,11 @@ pub fn build_screen(s Snapshot) ui2.Element {
 					size:        12
 					font_family: 'Consolas'
 				}),
-				ui2.label('', d.status + (if d.err != '' { ' !! ' + d.err } else { '' }),
+				ui2.label('', fashape.sh_auto(d.status + (if d.err != '' {
+					' !! ' + d.err
+				} else {
+					''
+				})),
 					ui2.rect(col_status - main_x - 12, 16, 130, 22), ui2.TextStyle{
 						color: status_color(d.status)
 						size:  12
@@ -375,7 +406,7 @@ pub fn build_screen(s Snapshot) ui2.Element {
 
 	// ---- status bar ----
 	st := if s.message != '' {
-		s.message
+		fashape.sh_auto(s.message)
 	} else {
 		'active ${s.num_active}  waiting ${s.num_waiting}  stopped ${s.num_stopped}  ${rows.len} shown  v' + s.down_speed + '  ^' + s.up_speed + (if s.version != '' {
 			'  aria2 ' + s.version
@@ -407,8 +438,8 @@ pub fn build_screen(s Snapshot) ui2.Element {
 
 // bottom_panel is the FDM-like inspector for the selected download.
 fn bottom_panel(s Snapshot, w f64, h f64) []ui2.Element {
-	tabs := [['tab_progress', tr(s.fa, 'progress')], ['tab_files', tr(s.fa, 'files')],
-		['tab_details', tr(s.fa, 'details_tab')]]
+	tabs := [['tab_progress', t(s.fa, 'progress')], ['tab_files', t(s.fa, 'files')],
+		['tab_details', t(s.fa, 'details_tab')]]
 	mut out := []ui2.Element{}
 	mut tx := 12.0
 	for t in tabs {
@@ -431,13 +462,13 @@ fn bottom_panel(s Snapshot, w f64, h f64) []ui2.Element {
 		sx := 12.0 + w * 0.58 + 16.0
 		sw := w - sx - 12.0
 		sel := if s.selected == '' {
-			tr(s.fa, 'select_hint')
+			t(s.fa, 'select_hint')
 		} else {
 			name := s.selected
 			mut found := s.selected
 			for r in s.downloads {
 				if r.gid == s.selected {
-					found = r.name
+					found = fashape.sh_auto(r.name)
 					break
 				}
 			}
@@ -445,8 +476,9 @@ fn bottom_panel(s Snapshot, w f64, h f64) []ui2.Element {
 			found
 		}
 		out << ui2.label('', sel, ui2.rect(sx, body_y, sw, 22), ui2.TextStyle{
-			color: c_text
-			size:  13
+			color:       c_text
+			size:        13
+			font_family: if s.fa { fa_font } else { '' }
 		})
 		pct := if s.info_fresh { s.info.percent } else { 0.0 }
 		out << segments(pct, sx, body_y + 28, sw)
@@ -463,14 +495,17 @@ fn bottom_panel(s Snapshot, w f64, h f64) []ui2.Element {
 			size:        12
 			font_family: 'Consolas'
 		})
-		out << ui2.label('', tr(s.fa, 'segments'), ui2.rect(sx, body_y + 74, sw, 20),
-			tmuted(11))
+		out << ui2.label('', t(s.fa, 'segments'), ui2.rect(sx, body_y + 74, sw, 20), ui2.TextStyle{
+			color:       c_muted
+			size:        11
+			font_family: if s.fa { fa_font } else { '' }
+		})
 	} else if s.bottom_tab == 'files' {
 		if !s.info_fresh {
 			out << ui2.label('', if s.selected == '' {
-				tr(s.fa, 'select_hint')
+				t(s.fa, 'select_hint')
 			} else {
-				tr(s.fa, 'loading')
+				t(s.fa, 'loading')
 			}, ui2.rect(12, body_y + 8, w - 24, 24), tmuted(12))
 		} else if s.info.files_prog.len == 0 {
 			out << ui2.label('', s.info.name, ui2.rect(12, body_y + 8, w - 24, 24),
@@ -485,9 +520,10 @@ fn bottom_panel(s Snapshot, w f64, h f64) []ui2.Element {
 				items << ui2.view('filerow${i}', ui2.rect(0, y, w - 24, 26), ui2.BoxStyle{
 					transparent: true
 				}, [
-					ui2.label('', f.path, ui2.rect(0, 0, w * 0.55, 18), ui2.TextStyle{
-						color: c_text
-						size:  12
+					ui2.label('', fashape.sh_auto(f.path), ui2.rect(0, 0, w * 0.55, 18), ui2.TextStyle{
+						color:       c_text
+						size:        12
+						font_family: if s.fa { fa_font } else { '' }
 					}),
 					ui2.view('ftrack${i}', ui2.rect(w * 0.57, 5, w * 0.25, 8), ui2.BoxStyle{
 						bg:     c_line
@@ -516,9 +552,9 @@ fn bottom_panel(s Snapshot, w f64, h f64) []ui2.Element {
 	} else {
 		if !s.info_fresh {
 			out << ui2.label('', if s.selected == '' {
-				tr(s.fa, 'select_hint')
+				t(s.fa, 'select_hint')
 			} else {
-				tr(s.fa, 'loading')
+				t(s.fa, 'loading')
 			}, ui2.rect(12, body_y + 8, w - 24, 24), tmuted(12))
 		} else {
 			d := s.info
@@ -537,11 +573,11 @@ fn bottom_panel(s Snapshot, w f64, h f64) []ui2.Element {
 				if p[1] == '' {
 					continue
 				}
-				col << ui2.label('', p[0] + ':  ' + p[1], ui2.rect(0, y, w - 24, 20),
+				col << ui2.label('', p[0] + ':  ' + fashape.sh_auto(p[1]), ui2.rect(0, y, w - 24, 20),
 					ui2.TextStyle{
 						color:       c_text
 						size:        12
-						font_family: 'Consolas'
+						font_family: if s.fa { fa_font } else { 'Consolas' }
 					})
 				y += 22.0
 			}
@@ -579,24 +615,27 @@ fn settings_overlay(s Snapshot, w f64, h f64) ui2.Element {
 				bg:     c_card
 				radius: 7
 			}, ui2.TextStyle{
-				color: c_text
-				size:  12
+				color:       c_text
+				size:        12
+				font_family: if s.fa { fa_font } else { '' }
 			}, 0)
-			items << ui2.button('pick_dir', tr(s.fa, 'pick'), ui2.rect(16 + fw - 100, y,
+			items << ui2.button('pick_dir', t(s.fa, 'pick'), ui2.rect(16 + fw - 100, y,
 				100, 34), ui2.BoxStyle{
 				bg:     c_bar
 				radius: 7
 			}, ui2.TextStyle{
-				color: c_text
-				size:  12
+				color:       c_text
+				size:        12
+				font_family: if s.fa { fa_font } else { '' }
 			})
 		} else {
 			items << ui2.text_field(r[0], '', r[2], ui2.rect(16, y, fw, 34), ui2.BoxStyle{
 				bg:     c_card
 				radius: 7
 			}, ui2.TextStyle{
-				color: c_text
-				size:  12
+				color:       c_text
+				size:        12
+				font_family: if s.fa { fa_font } else { '' }
 			}, 0)
 		}
 		y += 40.0
@@ -637,13 +676,13 @@ fn settings_overlay(s Snapshot, w f64, h f64) ui2.Element {
 		border_right:  2
 		border_bottom: 2
 	}, [
-		ui2.label('', tr(s.fa, 'settings'), ui2.rect(16, 10, bw - 220, 30), ui2.TextStyle{
+		ui2.label('', t(s.fa, 'settings'), ui2.rect(16, 10, bw - 220, 30), ui2.TextStyle{
 			color:       c_text
 			size:        16
 			bold:        true
 			font_family: if s.fa { fa_font } else { '' }
 		}),
-		ui2.button('close_settings', tr(s.fa, 'close'), ui2.rect(bw - 204, 10, 90, 30),
+		ui2.button('close_settings', t(s.fa, 'close'), ui2.rect(bw - 204, 10, 90, 30),
 			ui2.BoxStyle{
 				bg:     c_bar
 				radius: 7
@@ -651,7 +690,7 @@ fn settings_overlay(s Snapshot, w f64, h f64) ui2.Element {
 				color: c_text
 				size:  12
 			}),
-		ui2.button('save_settings', tr(s.fa, 'save'), ui2.rect(bw - 104, 10, 90, 30),
+		ui2.button('save_settings', t(s.fa, 'save'), ui2.rect(bw - 104, 10, 90, 30),
 			ui2.BoxStyle{
 				bg:     c_accent
 				radius: 7
@@ -669,9 +708,10 @@ fn log_overlay(s Snapshot, w f64, h f64) ui2.Element {
 	mut items := []ui2.Element{}
 	mut y := 10.0
 	for n in s.notices {
-		items << ui2.label('', n, ui2.rect(16, y, bw - 32, 20), ui2.TextStyle{
-			color: c_text
-			size:  12
+		items << ui2.label('', fashape.sh_auto(n), ui2.rect(16, y, bw - 32, 20), ui2.TextStyle{
+			color:       c_text
+			size:        12
+			font_family: if s.fa { fa_font } else { '' }
 		})
 		y += 22.0
 	}
@@ -697,12 +737,12 @@ fn log_overlay(s Snapshot, w f64, h f64) ui2.Element {
 		border_right:  2
 		border_bottom: 2
 	}, [
-		ui2.label('', tr(s.fa, 'log'), ui2.rect(16, 10, bw - 320, 30), ui2.TextStyle{
+		ui2.label('', t(s.fa, 'log'), ui2.rect(16, 10, bw - 320, 30), ui2.TextStyle{
 			color: c_text
 			size:  16
 			bold:  true
 		}),
-		ui2.button('clear_notices', tr(s.fa, 'clear'), ui2.rect(bw - 204, 10, 90, 30),
+		ui2.button('clear_notices', t(s.fa, 'clear'), ui2.rect(bw - 204, 10, 90, 30),
 			ui2.BoxStyle{
 				bg:     c_bar
 				radius: 7
@@ -710,7 +750,7 @@ fn log_overlay(s Snapshot, w f64, h f64) ui2.Element {
 				color: c_text
 				size:  12
 			}),
-		ui2.button('close_log', tr(s.fa, 'close'), ui2.rect(bw - 104, 10, 90, 30),
+		ui2.button('close_log', t(s.fa, 'close'), ui2.rect(bw - 104, 10, 90, 30),
 			ui2.BoxStyle{
 				bg:     c_accent
 				radius: 7
@@ -723,7 +763,7 @@ fn log_overlay(s Snapshot, w f64, h f64) ui2.Element {
 // the view should rebuild (almost always).
 pub fn handle_event(mut a &App, event string) bool {
 	match event {
-		'add' {
+		'add', 'add_top' {
 			url := ui2.text('add_field')
 			a.add(url)
 			if url.trim_space() != '' {

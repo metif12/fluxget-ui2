@@ -2,6 +2,7 @@
 module app
 
 import core
+import fashape
 import store
 import sync
 
@@ -21,6 +22,47 @@ fn test_tr_has_every_action_key_in_both_locales() {
 		assert tr(true, k) != k, 'missing fa: ' + k
 		assert tr(false, k) != k, 'missing en: ' + k
 	}
+}
+
+fn test_sh_passthrough_latin() {
+	assert fashape.sh('Add 100% /tmp/x.iso') == 'Add 100% /tmp/x.iso'
+	assert fashape.sh('') == ''
+}
+
+fn test_sh_reorders_rtl_run_first() {
+	// LTR base ("ab" first): order kept, the lone letter only shaped.
+	got := fashape.sh('ab ج')
+	assert got == 'ab ' + [rune(0x62c)].string()
+}
+
+fn test_sh_rtl_base_reverses_runs() {
+	// Logical meem + space + "12": visual is the shaped meem rightmost,
+	// digits intact on its left.
+	got := fashape.sh('م 12')
+	assert got == [rune(32), rune(49), rune(50), rune(0x645)].string()
+}
+
+fn test_sh_joins_baa_yeh() {
+	// "بی": beh initial (FE91) + farsi yeh final (FBFD), run reversed.
+	got := fashape.sh('بی')
+	assert got == [rune(0xfbfd), rune(0xfe91)].string()
+}
+
+fn test_sh_zwnj_breaks() {
+	// beh + ZWNJ + alef: both isolated, ZWNJ dropped.
+	got := fashape.sh([rune(0x628), rune(0x200c), rune(0x627)].string())
+	assert got == [rune(0xfe8e), rune(0x628)].string()
+}
+
+fn test_sh_three_letter_chain() {
+	// "نما": noon initial + meem medial + alef final, run reversed.
+	got := fashape.sh('نما')
+	assert got == [rune(0xfe8e), rune(0xfee4), rune(0xfee7)].string()
+}
+
+fn test_sh_auto_only_touches_rtl() {
+	assert fashape.sh_auto('plain') == 'plain'
+	assert fashape.sh_auto('افزودن') == fashape.sh('افزودن')
 }
 
 fn test_file_kind_by_extension() {
